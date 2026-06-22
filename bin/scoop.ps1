@@ -42,6 +42,15 @@ switch ($subCommand) {
         [string[]]$arguments = $Args | Select-Object -Skip 1
         if ($null -ne $arguments -and $arguments[0] -in @('-h', '--help', '/?')) {
             exec 'help' @($subCommand)
+        } elseif ($subCommand -eq 'update') {
+            . "$PSScriptRoot\..\lib\getopt.ps1"
+            . "$PSScriptRoot\..\lib\json.ps1"
+            . "$PSScriptRoot\..\lib\system.ps1"
+            . "$PSScriptRoot\..\lib\manifest.ps1"
+            . "$PSScriptRoot\..\lib\versions.ps1"
+            . "$PSScriptRoot\..\lib\download.ps1"
+            . "$PSScriptRoot\..\lib\update-processes.ps1"
+            Invoke-ScoopUpdateWithProcessManagement -Arguments $arguments
         } else {
             exec $subCommand $arguments
         }
