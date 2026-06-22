@@ -208,7 +208,32 @@ function Test-ScoopProcessesIncludeService {
                 [Int32]$_.ProcessId -in $processIds
             } | Select-Object -First 1)
     } catch {
-        return $false
+        warn "Unable to verify whether matching processes are Windows services; automatic close is being skipped."
+        return $true
+    }
+}
+
+function Get-ScoopProcessInfo {
+    [CmdletBinding()]
+    param(
+        [Object[]] $Processes
+    )
+
+    $processIds = @($Processes | ForEach-Object { [Int32]$_.Id })
+    try {
+        return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+                [Int32]$_.ProcessId -in $processIds
+            })
+    } catch {
+        return @($Processes | ForEach-Object {
+                $path = $null
+                try { $path = $_.Path } catch { }
+                [PSCustomObject]@{
+                    ProcessId       = [Int32]$_.Id
+                    ParentProcessId = 0
+                    ExecutablePath  = $path
+                }
+            })
     }
 }
 
@@ -222,23 +247,7 @@ function New-ScoopAppUpdateProcessState {
     )
 
     $appRoot = appdir $Target.App $Target.Global
-    $processIds = @($Processes | ForEach-Object { [Int32]$_.Id })
-    $processInfo = @()
-
-    try {
-        $processInfo = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-                [Int32]$_.ProcessId -in $processIds
-            })
-    } catch {
-        $processInfo = @($Processes | ForEach-Object {
-                [PSCustomObject]@{
-                    ProcessId       = [Int32]$_.Id
-                    ParentProcessId = 0
-                    ExecutablePath  = try { $_.Path } catch { $null }
-                }
-            })
-    }
-
+    $processInfo = @(Get-ScoopProcessInfo -Processes $Processes)
     $rootProcesses = @(Get-ScoopRootProcessInfo -ProcessInfo $processInfo)
     if ($rootProcesses.Count -eq 0) {
         $rootProcesses = $processInfo
@@ -248,10 +257,12 @@ function New-ScoopAppUpdateProcessState {
     $seen = @{}
     foreach ($rootProcess in $rootProcesses) {
         $process = $Processes | Where-Object { [Int32]$_.Id -eq [Int32]$rootProcess.ProcessId } | Select-Object -First 1
-        $path = if ($process) {
-            try { $process.Path } catch { $null }
-        } else {
-            $rootProcess.ExecutablePath
+        $path = $null
+        if ($process) {
+            try { $path = $process.Path } catch { }
+        }
+        if (!$path) {
+            $path = $rootProcess.ExecutablePath
         }
         if (!$path) {
             continue
@@ -280,7 +291,8 @@ function New-ScoopAppUpdateProcessState {
             $fallback = @($Processes | Select-Object -First 1)
         }
         foreach ($process in $fallback) {
-            $path = try { $process.Path } catch { $null }
+            $path = $null
+            try { $path = $process.Path } catch { }
             if (!$path) {
                 continue
             }
@@ -302,6 +314,63 @@ function New-ScoopAppUpdateProcessState {
     }
 }
 
+function Resolve-ScoopRestartExecutable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject] $State,
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject] $RestartExecutable,
+        [Switch] $PreferOriginalPath
+    )
+
+    $newPath = Join-Path (currentdir $State.App $State.Global) $RestartExecutable.RelativePath
+    if ($PreferOriginalPath -and (Test-Path $RestartExecutable.OriginalPath -PathType Leaf)) {
+        return $RestartExecutable.OriginalPath
+    }
+    if (Test-Path $newPath -PathType Leaf) {
+        return $newPath
+    }
+    if (Test-Path $RestartExecutable.OriginalPath -PathType Leaf) {
+        return $RestartExecutable.OriginalPath
+    }
+
+    $appRoot = appdir $State.App $State.Global
+    $candidate = Get-ChildItem $appRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'current' } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        ForEach-Object { Join-Path $_.FullName $RestartExecutable.RelativePath } |
+        Where-Object { Test-Path $_ -PathType Leaf } |
+        Select-Object -First 1
+
+    return $candidate
+}
+
+function Test-ScoopAppExecutableRunning {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject] $State,
+        [Parameter(Mandatory = $true)]
+        [String] $RelativePath
+    )
+
+    $appRoot = appdir $State.App $State.Global
+    foreach ($process in @(Get-ScoopAppRunningProcesses -App $State.App -Global $State.Global)) {
+        $path = $null
+        try { $path = $process.Path } catch { }
+        if (!$path) {
+            continue
+        }
+        $runningRelativePath = Get-ScoopRelativeExecutablePath -AppRoot $appRoot -ExecutablePath $path
+        if ($runningRelativePath -and $runningRelativePath.Equals($RelativePath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Start-ScoopAppAfterUpdate {
     [CmdletBinding()]
     param(
@@ -310,28 +379,14 @@ function Start-ScoopAppAfterUpdate {
         [Switch] $PreferOriginalPath
     )
 
-    $currentRoot = currentdir $State.App $State.Global
     foreach ($restartExecutable in @($State.RestartExecutables)) {
-        $newPath = Join-Path $currentRoot $restartExecutable.RelativePath
-        if (!$PreferOriginalPath -and (Test-Path $newPath -PathType Leaf)) {
-            $targetPath = $newPath
-        } elseif (Test-Path $restartExecutable.OriginalPath -PathType Leaf) {
-            $targetPath = $restartExecutable.OriginalPath
-        } elseif (Test-Path $newPath -PathType Leaf) {
-            $targetPath = $newPath
-        } else {
-            warn "Could not restart '$($State.App)': executable not found."
+        if (Test-ScoopAppExecutableRunning -State $State -RelativePath $restartExecutable.RelativePath) {
             continue
         }
 
-        $alreadyRunning = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-                try {
-                    $_.Path -and $_.Path.Equals($targetPath, [StringComparison]::OrdinalIgnoreCase)
-                } catch {
-                    $false
-                }
-            }).Count -gt 0
-        if ($alreadyRunning) {
+        $targetPath = Resolve-ScoopRestartExecutable -State $State -RestartExecutable $restartExecutable -PreferOriginalPath:$PreferOriginalPath
+        if (!$targetPath) {
+            warn "Could not restart '$($State.App)': executable not found."
             continue
         }
 
@@ -353,7 +408,7 @@ function Stop-ScoopAppForUpdate {
     }
 
     if (Test-ScoopProcessesIncludeService -Processes $processes) {
-        warn "Automatic close skipped for '$($Target.App)' because a matching process is a Windows service."
+        warn "Automatic close skipped for '$($Target.App)' because a matching process may be a Windows service."
         return $null
     }
 
@@ -364,7 +419,7 @@ function Stop-ScoopAppForUpdate {
     try {
         $processes | Stop-Process -Force -ErrorAction Stop
         foreach ($process in $processes) {
-            try { $process.WaitForExit() } catch { }
+            try { Wait-Process -Id $process.Id -ErrorAction SilentlyContinue } catch { }
         }
     } catch {
         warn "Could not stop all instances of '$($Target.App)': $($_.Exception.Message)"
