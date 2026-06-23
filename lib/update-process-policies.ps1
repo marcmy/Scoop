@@ -33,11 +33,12 @@ function ConvertTo-ScoopAppAllowlist {
     $seen = @{}
     $apps = @()
     foreach ($item in $items) {
-        if ([String]::IsNullOrWhiteSpace("$item")) {
+        $candidate = ("$item").Trim()
+        if ([String]::IsNullOrWhiteSpace($candidate)) {
             continue
         }
 
-        $app, $null, $null = parse_app "$item".Trim()
+        $app, $null, $null = parse_app $candidate
         if ([String]::IsNullOrWhiteSpace($app) -or $app -eq 'scoop') {
             continue
         }
