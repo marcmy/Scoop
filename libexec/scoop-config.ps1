@@ -103,6 +103,14 @@
 #       any target app process is running. Procedure here refers to reset/uninstall/update.
 #       When set to $true, Scoop only displays a warning message and continues procedure.
 #
+# auto_close_running_processes: $true|$false
+#       Automatically stop running processes belonging to apps that are about to be updated.
+#       Defaults to $false.
+#
+# auto_restart_running_processes: $true|$false
+#       Restart app executables that were running before an update completes.
+#       Enabling this setting also enables automatic process closing. Defaults to $false.
+#
 # private_hosts:
 #       Array of private hosts that need additional authentication.
 #       For example, if you want to access a private GitHub repository,
