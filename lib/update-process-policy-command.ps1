@@ -47,9 +47,16 @@ function Set-ScoopProcessPolicyApps {
     $metadata = Get-ScoopProcessPolicyCommandMetadata -Policy $Policy
     $normalized = @(ConvertTo-ScoopAppAllowlist @($Apps))
 
-    # Keep the property defined even when empty so per-app mode remains enabled
-    # instead of falling back to the legacy all-app booleans.
-    set_config $metadata.ConfigName ($normalized -join ',') | Out-Null
+    # Using the per-app commands migrates away from the legacy all-app switches,
+    # so clearing both lists cannot unexpectedly re-enable global close/restart.
+    set_config AUTO_CLOSE_RUNNING_PROCESSES $null | Out-Null
+    set_config AUTO_RESTART_RUNNING_PROCESSES $null | Out-Null
+
+    if ($normalized.Count -eq 0) {
+        set_config $metadata.ConfigName $null | Out-Null
+    } else {
+        set_config $metadata.ConfigName ($normalized -join ',') | Out-Null
+    }
 }
 
 function Resolve-ScoopProcessPolicyCommandApps {
@@ -149,11 +156,6 @@ function Invoke-ScoopProcessPolicyCommand {
         return 0
     }
 
-    if ($SubCommand -notin $knownSubCommands) {
-        $Arguments = @($SubCommand) + @($Arguments)
-        $SubCommand = 'add'
-    }
-
     switch ($SubCommand) {
         'list' {
             if (@($Arguments).Count -gt 0) {
@@ -205,7 +207,7 @@ function Invoke-ScoopProcessPolicyCommand {
 
     $updated = @($current | Where-Object { $_ -notin $apps })
     Set-ScoopProcessPolicyApps -Policy $Policy -Apps $updated
-    success "Disabled $($metadata.Label) for: $($apps -join ', ')."
+    success "Disabled the $($metadata.Label) policy for: $($apps -join ', ')."
 
     if ($Policy -eq 'Close') {
         $restartApps = @(Get-ScoopProcessPolicyApps -Policy Restart)
