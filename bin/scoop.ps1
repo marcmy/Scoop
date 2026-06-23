@@ -55,6 +55,7 @@ switch ($subCommand) {
             . "$PSScriptRoot\..\lib\update-processes.ps1"
             . "$PSScriptRoot\..\lib\update-process-policies.ps1"
             . "$PSScriptRoot\..\lib\fixed-path-processes.ps1"
+            . "$PSScriptRoot\..\lib\update-process-allowlist-wrapper.ps1"
             Invoke-ScoopUpdateWithProcessManagement -Arguments $arguments
         } else {
             exec $subCommand $arguments
