@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Check out fork master
@@ -35,6 +35,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Configure remotes
         shell: bash
@@ -42,6 +43,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch --prune origin master
           git fetch --prune upstream "${UPSTREAM_BRANCH}"
@@ -59,7 +61,7 @@ jobs:
             echo 'up_to_date=false' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Close a stale sync PR when no changes remain
+      - name: Clean up stale reports when no changes remain
         if: steps.status.outputs.up_to_date == 'true'
         shell: bash
         run: |
@@ -68,6 +70,12 @@ jobs:
           if [[ -n "$pr_number" ]]; then
             gh pr comment "$pr_number" --body 'Closing automatically because `master` already contains the current upstream `master`.'
             gh pr close "$pr_number"
+          fi
+
+          issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
+          if [[ -n "$issue_number" ]]; then
+            gh issue comment "$issue_number" --body 'Closing automatically because `master` now contains the current upstream `master`.'
+            gh issue close "$issue_number"
           fi
 
       - name: Merge upstream into the sync branch
@@ -128,6 +136,12 @@ jobs:
 
           Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
+
+          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$pr_number" ]]; then
+            gh pr comment "$pr_number" --body 'Closing because the latest upstream merge conflicts and the automation branch was intentionally left unchanged.'
+            gh pr close "$pr_number"
+          fi
 
           issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
           if [[ -n "$issue_number" ]]; then
