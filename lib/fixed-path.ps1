@@ -191,12 +191,54 @@ function New-ScoopFixedPathTree {
     }
 }
 
-function Remove-ScoopFixedPathDirectory {
-    param([Parameter(Mandatory = $true)] [String] $Path)
+function Remove-ScoopFixedPathItem {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String] $Path
+    )
 
-    if (Test-Path -LiteralPath $Path) {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (!$item) {
+        return
     }
+
+    $isReparsePoint = [Boolean](
+        $item.Attributes -band [IO.FileAttributes]::ReparsePoint
+    )
+
+    if ($isReparsePoint) {
+        if ($item.PSIsContainer) {
+            # Scoop marks persisted junctions read-only.
+            & attrib.exe -R /L $item.FullName 2>$null
+            Remove-Item -LiteralPath $item.FullName `
+                -Recurse -Force -ErrorAction Stop
+        } else {
+            Remove-Item -LiteralPath $item.FullName `
+                -Force -ErrorAction Stop
+        }
+
+        return
+    }
+
+    if ($item.PSIsContainer) {
+        foreach ($child in @(
+            Get-ChildItem -LiteralPath $item.FullName `
+                -Force -ErrorAction Stop
+        )) {
+            Remove-ScoopFixedPathItem -Path $child.FullName
+        }
+    }
+
+    Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+}
+
+function Remove-ScoopFixedPathDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String] $Path
+    )
+
+    Remove-ScoopFixedPathItem -Path $Path
 }
 
 function Set-ScoopAppLaunchersToDirectory {
