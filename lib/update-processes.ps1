@@ -134,11 +134,12 @@ function Get-ScoopUpdateTargets {
             }
 
             if ($global) {
+                if (!(installed $app $true)) {
+                    continue
+                }
                 $scope = $true
             } elseif (installed $app $false) {
                 $scope = $false
-            } elseif (installed $app $true) {
-                $scope = $true
             } else {
                 continue
             }
@@ -446,6 +447,29 @@ function Invoke-ScoopUpdateWithProcessManagement {
     if (!$settings.Close) {
         exec 'update' $Arguments
         return
+    }
+
+    $opt, $apps, $err = getopt $Arguments 'gfiksqa' 'global', 'force', 'independent', 'no-cache', 'skip-hash-check', 'quiet', 'all'
+    if ($err) {
+        exec 'update' $Arguments
+        return
+    }
+
+    $global = $opt.g -or $opt.global
+    $all = $opt.a -or $opt.all
+    $appArguments = @($apps | Where-Object { $_ -ne 'scoop' })
+    if (!$all -and $appArguments.Count -eq 0) {
+        exec 'update' $Arguments
+        return
+    }
+
+    if ($global -and !(is_admin)) {
+        exec 'update' $Arguments
+        return
+    }
+
+    if (is_scoop_outdated) {
+        exec 'update' @()
     }
 
     $targets = @(Get-ScoopUpdateTargets -Arguments $Arguments)
