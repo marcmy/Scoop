@@ -1,7 +1,6 @@
 # Description: Functions for managing commands and aliases.
 
 ## Functions for commands
-
 function command_files {
     (Get-ChildItem "$PSScriptRoot\..\libexec") + (Get-ChildItem "$scoopdir\shims") |
     Where-Object 'scoop-.*?\.ps1$' -Property Name -Match
@@ -34,12 +33,12 @@ function command_path($cmd) {
 
 function exec($cmd, $arguments) {
     $cmd_path = command_path $cmd
+    $argumentList = @($arguments)
 
-    & $cmd_path @arguments
+    & $cmd_path @argumentList
 }
 
 ## Functions for aliases
-
 function add_alias {
     param(
         [ValidateNotNullOrEmpty()]
@@ -119,10 +118,5 @@ function list_aliases {
         info 'No alias found.'
         return
     }
-    $alias_info = $alias_info | Sort-Object Name
-    $properties = @('Name', 'Command')
-    if ($verbose) {
-        $properties += 'Summary'
-    }
-    $alias_info | Select-Object $properties
+    $alias_info | Format-Table -AutoSize
 }
