@@ -1,0 +1,182 @@
+name: Sync upstream Scoop
+
+on:
+  schedule:
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-scoop-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: ScoopInstaller/Scoop
+  UPSTREAM_BRANCH: master
+  SYNC_BRANCH: sync/upstream-master
+  SYNC_PR_TITLE: 'chore: sync upstream Scoop'
+  CONFLICT_ISSUE_TITLE: 'chore: upstream Scoop sync requires conflict resolution'
+
+jobs:
+  sync:
+    name: Merge upstream into a review branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Check out fork master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure remotes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --prune origin master
+          git fetch --prune upstream "${UPSTREAM_BRANCH}"
+          git fetch origin "${SYNC_BRANCH}" || true
+
+      - name: Check whether upstream is already included
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" origin/master; then
+            echo 'up_to_date=true' >> "$GITHUB_OUTPUT"
+            echo 'Fork master already contains the current upstream master.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'up_to_date=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Close a stale sync PR when no changes remain
+        if: steps.status.outputs.up_to_date == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$pr_number" ]]; then
+            gh pr comment "$pr_number" --body 'Closing automatically because `master` already contains the current upstream `master`.'
+            gh pr close "$pr_number"
+          fi
+
+      - name: Merge upstream into the sync branch
+        if: steps.status.outputs.up_to_date != 'true'
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch --force-create "${SYNC_BRANCH}" origin/master
+
+          set +e
+          git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}" > merge-output.txt 2>&1
+          merge_status=$?
+          set -e
+
+          cat merge-output.txt
+          if [[ $merge_status -ne 0 ]]; then
+            conflicted_files="$(git diff --name-only --diff-filter=U)"
+            {
+              echo 'conflict=true'
+              echo 'files<<EOF'
+              printf '%s\n' "$conflicted_files"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+
+            {
+              echo '## Upstream merge conflict'
+              echo
+              echo 'The automated merge was aborted. Conflicting files:'
+              echo
+              echo '```text'
+              printf '%s\n' "$conflicted_files"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            git merge --abort
+            exit 0
+          fi
+
+          echo 'conflict=false' >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" >> "$GITHUB_OUTPUT"
+
+      - name: Report merge conflicts
+        if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > conflict-report.md <<EOF
+          The scheduled merge of \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` into \`${{ github.repository }}:master\` could not be completed automatically.
+
+          Conflicting files:
+
+          \`\`\`text
+          ${{ steps.merge.outputs.files }}
+          \`\`\`
+
+          The workflow left \`master\` and \`${SYNC_BRANCH}\` unchanged. Resolve the merge manually on a separate branch, then close this issue after the result reaches \`master\`.
+
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+          issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
+          if [[ -n "$issue_number" ]]; then
+            gh issue comment "$issue_number" --body-file conflict-report.md
+          else
+            gh issue create --title "${CONFLICT_ISSUE_TITLE}" --body-file conflict-report.md
+          fi
+
+      - name: Push the clean sync branch
+        if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
+
+      - name: Open or update the upstream sync PR
+        if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > pr-body.md <<EOF
+          Merges the latest \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` into this fork through a normal reviewable merge commit.
+
+          - Upstream commit: \`${{ steps.merge.outputs.upstream_sha }}\`
+          - Automation branch: \`${SYNC_BRANCH}\`
+          - Fork customizations are preserved unless a reviewer explicitly resolves a conflict otherwise.
+
+          This branch is automation-owned and may be force-updated by later sync runs. Do not place manual work directly on it.
+          EOF
+
+          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$pr_number" ]]; then
+            gh pr edit "$pr_number" --title "${SYNC_PR_TITLE}" --body-file pr-body.md
+          else
+            gh pr create --head "${SYNC_BRANCH}" --base master --title "${SYNC_PR_TITLE}" --body-file pr-body.md
+          fi
+
+      - name: Close a resolved conflict issue
+        if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
+          if [[ -n "$issue_number" ]]; then
+            gh issue comment "$issue_number" --body 'The latest automated upstream merge completed cleanly. Closing this conflict report.'
+            gh issue close "$issue_number"
+          fi
+
+      - name: Fail the run after reporting a conflict
+        if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict == 'true'
+        shell: bash
+        run: exit 1
