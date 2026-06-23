@@ -42,6 +42,91 @@ function Write-ScoopRunningProcessSkip {
     Write-Host ($Processes | Format-Table -AutoSize | Out-String)
 }
 
+function Invoke-ScoopLegacyUpdateProcessManagement {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [String[]] $Arguments,
+        [Parameter(Mandatory = $true)] [PSCustomObject[]] $Targets,
+        [Parameter(Mandatory = $true)] [PSCustomObject] $Settings
+    )
+
+    $states = @()
+    try {
+        if ($Settings.CloseAll) {
+            foreach ($target in $Targets) {
+                $state = Stop-ScoopAppForUpdate -Target $target
+                if ($state) {
+                    $states += $state
+                }
+            }
+        }
+
+        $blockedFixedApps = @($Targets | Where-Object {
+                (Test-ScoopFixedPathEnabled -App $_.App -Global $_.Global) -and
+                (@(Get-ScoopAppRunningProcesses -App $_.App -Global $_.Global).Count -gt 0)
+            })
+        if ($blockedFixedApps.Count -gt 0) {
+            foreach ($target in $blockedFixedApps) {
+                error "'$($target.App)' is still running from its fixed path. Close it and try again."
+            }
+            return
+        }
+
+        exec 'update' $Arguments
+        Sync-ScoopFixedPathsAfterUpdate -Targets $Targets
+    } finally {
+        if ($Settings.RestartAll) {
+            foreach ($state in $states) {
+                Start-ScoopAppAfterUpdate -State $state
+            }
+        }
+    }
+}
+
+function Invoke-ScoopAllowlistedUpdateProcessManagement {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [PSCustomObject[]] $Targets,
+        [Parameter(Mandatory = $true)] [PSCustomObject] $Settings,
+        [Parameter(Mandatory = $true)] [Object] $Options
+    )
+
+    $restartStates = @()
+    try {
+        foreach ($target in $Targets) {
+            $policy = Get-ScoopUpdateProcessPolicy -Settings $Settings -Target $target
+            $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
+            $state = $null
+
+            if ($processes.Count -gt 0 -and $policy.Close) {
+                $state = Stop-ScoopAppForUpdate -Target $target
+                $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
+            }
+
+            if ($processes.Count -gt 0) {
+                Write-ScoopRunningProcessSkip -Target $target -Processes $processes
+                continue
+            }
+
+            if ($state -and $policy.Restart) {
+                $restartStates += $state
+            }
+
+            $targetArguments = New-ScoopTargetUpdateArguments -Target $target -Options $Options
+            exec 'update' $targetArguments
+
+            if ((Test-ScoopFixedPathEnabled -App $target.App -Global $target.Global) -and
+                (installed $target.App $target.Global)) {
+                Sync-ScoopFixedPathsAfterUpdate -Targets @($target)
+            }
+        }
+    } finally {
+        foreach ($state in $restartStates) {
+            Start-ScoopAppAfterUpdate -State $state
+        }
+    }
+}
+
 function Invoke-ScoopUpdateWithProcessManagement {
     [CmdletBinding()]
     param([String[]] $Arguments)
@@ -76,38 +161,9 @@ function Invoke-ScoopUpdateWithProcessManagement {
         return
     }
 
-    $restartStates = @()
-    try {
-        foreach ($target in $targets) {
-            $policy = Get-ScoopUpdateProcessPolicy -Settings $settings -Target $target
-            $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
-            $state = $null
-
-            if ($processes.Count -gt 0 -and $policy.Close) {
-                $state = Stop-ScoopAppForUpdate -Target $target
-                $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
-            }
-
-            if ($processes.Count -gt 0) {
-                Write-ScoopRunningProcessSkip -Target $target -Processes $processes
-                continue
-            }
-
-            if ($state -and $policy.Restart) {
-                $restartStates += $state
-            }
-
-            $targetArguments = New-ScoopTargetUpdateArguments -Target $target -Options $opt
-            exec 'update' $targetArguments
-
-            if ((Test-ScoopFixedPathEnabled -App $target.App -Global $target.Global) -and
-                (installed $target.App $target.Global)) {
-                Sync-ScoopFixedPathsAfterUpdate -Targets @($target)
-            }
-        }
-    } finally {
-        foreach ($state in $restartStates) {
-            Start-ScoopAppAfterUpdate -State $state
-        }
+    if ($settings.UseAllowlists) {
+        Invoke-ScoopAllowlistedUpdateProcessManagement -Targets $targets -Settings $settings -Options $opt
+    } else {
+        Invoke-ScoopLegacyUpdateProcessManagement -Arguments $Arguments -Targets $targets -Settings $settings
     }
 }
