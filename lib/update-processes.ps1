@@ -468,7 +468,7 @@ function Invoke-ScoopUpdateWithProcessManagement {
         return
     }
 
-    if (is_scoop_outdated) {
+    if (($apps -contains 'scoop') -or (is_scoop_outdated)) {
         exec 'update' @()
     }
 
