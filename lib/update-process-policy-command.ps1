@@ -92,15 +92,42 @@ function Show-ScoopProcessPolicyApps {
         [String] $Policy
     )
 
-    $metadata = Get-ScoopProcessPolicyCommandMetadata -Policy $Policy
-    $apps = @(Get-ScoopProcessPolicyApps -Policy $Policy)
+    if ($Policy -eq 'Restart') {
+        $apps = @(Get-ScoopProcessPolicyApps -Policy Restart)
+        if ($apps.Count -eq 0) {
+            info 'No apps are configured for automatic restart.'
+            return
+        }
+
+        $apps | ForEach-Object {
+            [PSCustomObject]@{ App = $_ }
+        } | Format-Table -AutoSize
+        return
+    }
+
+    $closeApps = @(Get-ScoopProcessPolicyApps -Policy Close)
+    $restartApps = @(Get-ScoopProcessPolicyApps -Policy Restart)
+    $apps = @(ConvertTo-ScoopAppAllowlist (@($closeApps) + @($restartApps)))
     if ($apps.Count -eq 0) {
-        info "No apps are configured for $($metadata.Label)."
+        info 'No apps are configured for automatic close.'
         return
     }
 
     $apps | ForEach-Object {
-        [PSCustomObject]@{ App = $_ }
+        $explicitClose = $_ -in $closeApps
+        $restart = $_ -in $restartApps
+        $mode = if ($explicitClose -and $restart) {
+            'close + restart'
+        } elseif ($restart) {
+            'restart'
+        } else {
+            'close'
+        }
+
+        [PSCustomObject]@{
+            App  = $_
+            Mode = $mode
+        }
     } | Format-Table -AutoSize
 }
 
@@ -143,6 +170,12 @@ function Invoke-ScoopProcessPolicyCommand {
             }
             Set-ScoopProcessPolicyApps -Policy $Policy -Apps @()
             success "Cleared the $($metadata.Label) app list."
+            if ($Policy -eq 'Close') {
+                $restartApps = @(Get-ScoopProcessPolicyApps -Policy Restart)
+                if ($restartApps.Count -gt 0) {
+                    warn "Apps configured for automatic restart remain eligible for automatic close: $($restartApps -join ', ')."
+                }
+            }
             return 0
         }
     }
@@ -173,5 +206,14 @@ function Invoke-ScoopProcessPolicyCommand {
     $updated = @($current | Where-Object { $_ -notin $apps })
     Set-ScoopProcessPolicyApps -Policy $Policy -Apps $updated
     success "Disabled $($metadata.Label) for: $($apps -join ', ')."
+
+    if ($Policy -eq 'Close') {
+        $restartApps = @(Get-ScoopProcessPolicyApps -Policy Restart)
+        $stillEffective = @($apps | Where-Object { $_ -in $restartApps })
+        if ($stillEffective.Count -gt 0) {
+            warn "These apps remain eligible for automatic close because automatic restart is enabled: $($stillEffective -join ', ')."
+        }
+    }
+
     return 0
 }
