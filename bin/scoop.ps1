@@ -53,6 +53,7 @@ switch ($subCommand) {
             . "$PSScriptRoot\..\lib\install.ps1"
             . "$PSScriptRoot\..\lib\fixed-path.ps1"
             . "$PSScriptRoot\..\lib\update-processes.ps1"
+            . "$PSScriptRoot\..\lib\update-process-policies.ps1"
             . "$PSScriptRoot\..\lib\fixed-path-processes.ps1"
             Invoke-ScoopUpdateWithProcessManagement -Arguments $arguments
         } else {
