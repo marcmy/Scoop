@@ -118,7 +118,7 @@ function Invoke-ScoopProcessPolicyCommand {
     $knownSubCommands = @('add', 'remove', 'rm', 'list', 'clear')
 
     if ([String]::IsNullOrWhiteSpace($SubCommand)) {
-        Show-ScoopProcessPolicyApps -Policy $Policy
+        Show-ScoopProcessPolicyApps -Policy $Policy | Out-Host
         return 0
     }
 
@@ -133,7 +133,7 @@ function Invoke-ScoopProcessPolicyCommand {
                 error "Subcommand 'list' does not accept app names."
                 return 1
             }
-            Show-ScoopProcessPolicyApps -Policy $Policy
+            Show-ScoopProcessPolicyApps -Policy $Policy | Out-Host
             return 0
         }
         'clear' {
