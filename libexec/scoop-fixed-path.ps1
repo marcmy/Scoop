@@ -83,10 +83,14 @@ if ($global -and !(is_admin)) {
 }
 
 $installation = @(Confirm-InstallationStatus -Apps @($app) -Global:$global)
-if ($installation.Count -eq 0) {
+while ($installation.Count -eq 1 -and $installation[0] -is [System.Array]) {
+    $installation = @($installation[0])
+}
+if ($installation.Count -lt 2) {
     exit 1
 }
-($app, $global) = $installation[0]
+$app = [String]$installation[0]
+$global = [Boolean]$installation[1]
 
 $version = Select-CurrentVersion -AppName $app -Global:$global
 $manifest = installed_manifest $app $version $global
