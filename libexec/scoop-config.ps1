@@ -103,13 +103,28 @@
 #       any target app process is running. Procedure here refers to reset/uninstall/update.
 #       When set to $true, Scoop only displays a warning message and continues procedure.
 #
+# auto_close_running_apps: app[,app...]
+#       Scoop package names whose running processes may be stopped automatically before update.
+#       Accepts a comma/space-separated string or a JSON array string.
+#
+# auto_restart_running_apps: app[,app...]
+#       Scoop package names that should be restarted after being stopped and updated.
+#       Restart permission implies close permission for the same app.
+#
+#       Defining either app list enables per-app mode and makes both lists take precedence
+#       over auto_close_running_processes and auto_restart_running_processes.
+#
 # auto_close_running_processes: $true|$false
-#       Automatically stop running processes belonging to apps that are about to be updated.
-#       Defaults to $false.
+#       Legacy all-app mode: automatically stop every running app being updated.
+#       Used only when neither per-app list is defined. Defaults to $false.
 #
 # auto_restart_running_processes: $true|$false
-#       Restart app executables that were running before an update completes.
-#       Enabling this setting also enables automatic process closing. Defaults to $false.
+#       Legacy all-app mode: restart app executables that were running before an update.
+#       Enabling this also enables automatic closing. Used only when neither list is defined.
+#
+# fixed_path_apps:
+#       Internal scope-aware list managed by `scoop fixed-path` / `scoop fp`.
+#       Fixed app paths are stored under the Scoop root's `fixed` directory.
 #
 # private_hosts:
 #       Array of private hosts that need additional authentication.
