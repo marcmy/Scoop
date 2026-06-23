@@ -58,22 +58,30 @@ function Resolve-ScoopProcessPolicyCommandApps {
 
     $resolved = @()
     foreach ($argument in @($Arguments)) {
-        if ([String]::IsNullOrWhiteSpace($argument)) {
+        $candidate = ("$argument").Trim()
+        if ([String]::IsNullOrWhiteSpace($candidate)) {
             continue
         }
 
-        $app, $null, $null = parse_app $argument.Trim()
+        $app, $null, $null = parse_app $candidate
         if ([String]::IsNullOrWhiteSpace($app)) {
             continue
         }
         if ($app -eq 'scoop') {
-            error "'scoop' cannot be managed by an update process policy."
-            return $null
+            return [PSCustomObject]@{
+                Success = $false
+                Error   = "'scoop' cannot be managed by an update process policy."
+                Apps    = @()
+            }
         }
         $resolved += $app
     }
 
-    return @(ConvertTo-ScoopAppAllowlist $resolved)
+    return [PSCustomObject]@{
+        Success = $true
+        Error   = $null
+        Apps    = @(ConvertTo-ScoopAppAllowlist $resolved)
+    }
 }
 
 function Show-ScoopProcessPolicyApps {
@@ -139,10 +147,13 @@ function Invoke-ScoopProcessPolicyCommand {
         }
     }
 
-    $apps = @(Resolve-ScoopProcessPolicyCommandApps -Arguments $Arguments)
-    if ($null -eq $apps) {
+    $resolution = Resolve-ScoopProcessPolicyCommandApps -Arguments $Arguments
+    if (!$resolution.Success) {
+        error $resolution.Error
         return 1
     }
+
+    $apps = @($resolution.Apps)
     if ($apps.Count -eq 0) {
         error '<app> missing'
         return 1
