@@ -67,16 +67,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty')"
+
+          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           if [[ -n "$pr_number" ]]; then
-            gh pr comment "$pr_number" --body 'Closing automatically because `master` already contains the current upstream `master`.'
-            gh pr close "$pr_number"
+            gh pr comment "$pr_number" --body 'Closing automatically because `master` already contains the current upstream `master`.' || true
+            gh pr close "$pr_number" || true
           fi
 
-          issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
-          if [[ -n "$issue_number" ]]; then
-            gh issue comment "$issue_number" --body 'Closing automatically because `master` now contains the current upstream `master`.'
-            gh issue close "$issue_number"
+          issues_enabled="$(gh api "repos/${GH_REPO}" --jq '.has_issues' 2>/dev/null || echo false)"
+          if [[ "$issues_enabled" == 'true' ]]; then
+            issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$issue_number" ]]; then
+              gh issue comment "$issue_number" --body 'Closing automatically because `master` now contains the current upstream `master`.' || true
+              gh issue close "$issue_number" || true
+            fi
           fi
 
       - name: Merge upstream into the sync branch
@@ -122,33 +126,45 @@ jobs:
       - name: Report merge conflicts
         if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict == 'true'
         shell: bash
+        env:
+          CONFLICTED_FILES: ${{ steps.merge.outputs.files }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           cat > conflict-report.md <<EOF
-          The scheduled merge of \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` into \`${{ github.repository }}:master\` could not be completed automatically.
+          The scheduled merge of \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` into \`${REPOSITORY}:master\` could not be completed automatically.
 
           Conflicting files:
 
           \`\`\`text
-          ${{ steps.merge.outputs.files }}
+          ${CONFLICTED_FILES}
           \`\`\`
 
           The workflow left \`master\` and \`${SYNC_BRANCH}\` unchanged. Resolve the merge manually on a separate branch, then close this issue after the result reaches \`master\`.
 
-          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Workflow run: ${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}
           EOF
 
-          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty')"
+          cat conflict-report.md >> "$GITHUB_STEP_SUMMARY"
+
+          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           if [[ -n "$pr_number" ]]; then
-            gh pr comment "$pr_number" --body 'Closing because the latest upstream merge conflicts and the automation branch was intentionally left unchanged.'
-            gh pr close "$pr_number"
+            gh pr comment "$pr_number" --body 'Closing because the latest upstream merge conflicts and the automation branch was intentionally left unchanged.' || true
+            gh pr close "$pr_number" || true
           fi
 
-          issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
-          if [[ -n "$issue_number" ]]; then
-            gh issue comment "$issue_number" --body-file conflict-report.md
+          issues_enabled="$(gh api "repos/${GH_REPO}" --jq '.has_issues' 2>/dev/null || echo false)"
+          if [[ "$issues_enabled" == 'true' ]]; then
+            issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$issue_number" ]]; then
+              gh issue comment "$issue_number" --body-file conflict-report.md || true
+            else
+              gh issue create --title "${CONFLICT_ISSUE_TITLE}" --body-file conflict-report.md || true
+            fi
           else
-            gh issue create --title "${CONFLICT_ISSUE_TITLE}" --body-file conflict-report.md
+            echo 'Repository Issues are disabled; the conflict report is available in this run summary.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Push the clean sync branch
@@ -161,19 +177,21 @@ jobs:
       - name: Open or update the upstream sync PR
         if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict != 'true'
         shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
         run: |
           set -euo pipefail
           cat > pr-body.md <<EOF
           Merges the latest \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` into this fork through a normal reviewable merge commit.
 
-          - Upstream commit: \`${{ steps.merge.outputs.upstream_sha }}\`
+          - Upstream commit: \`${UPSTREAM_SHA}\`
           - Automation branch: \`${SYNC_BRANCH}\`
           - Fork customizations are preserved unless a reviewer explicitly resolves a conflict otherwise.
 
           This branch is automation-owned and may be force-updated by later sync runs. Do not place manual work directly on it.
           EOF
 
-          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty')"
+          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           if [[ -n "$pr_number" ]]; then
             gh pr edit "$pr_number" --title "${SYNC_PR_TITLE}" --body-file pr-body.md
           else
@@ -185,10 +203,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" | head -n 1)"
-          if [[ -n "$issue_number" ]]; then
-            gh issue comment "$issue_number" --body 'The latest automated upstream merge completed cleanly. Closing this conflict report.'
-            gh issue close "$issue_number"
+          issues_enabled="$(gh api "repos/${GH_REPO}" --jq '.has_issues' 2>/dev/null || echo false)"
+          if [[ "$issues_enabled" == 'true' ]]; then
+            issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$issue_number" ]]; then
+              gh issue comment "$issue_number" --body 'The latest automated upstream merge completed cleanly. Closing this conflict report.' || true
+              gh issue close "$issue_number" || true
+            fi
           fi
 
       - name: Fail the run after reporting a conflict
