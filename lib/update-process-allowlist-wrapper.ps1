@@ -91,27 +91,23 @@ function Invoke-ScoopAllowlistedUpdateProcessManagement {
         [Parameter(Mandatory = $true)] [Object] $Options
     )
 
-    $restartStates = @()
-    try {
-        foreach ($target in $Targets) {
-            $policy = Get-ScoopUpdateProcessPolicy -Settings $Settings -Target $target
+    foreach ($target in $Targets) {
+        $policy = Get-ScoopUpdateProcessPolicy -Settings $Settings -Target $target
+        $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
+        $state = $null
+
+        if ($processes.Count -gt 0 -and $policy.Close) {
+            $state = Stop-ScoopAppForUpdate -Target $target
             $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
-            $state = $null
+        }
 
-            if ($processes.Count -gt 0 -and $policy.Close) {
-                $state = Stop-ScoopAppForUpdate -Target $target
-                $processes = @(Get-ScoopAppRunningProcesses -App $target.App -Global $target.Global)
-            }
+        if ($processes.Count -gt 0) {
+            Write-ScoopRunningProcessSkip -Target $target -Processes $processes
+            continue
+        }
 
-            if ($processes.Count -gt 0) {
-                Write-ScoopRunningProcessSkip -Target $target -Processes $processes
-                continue
-            }
-
-            if ($state -and $policy.Restart) {
-                $restartStates += $state
-            }
-
+        $restartState = if ($state -and $policy.Restart) { $state } else { $null }
+        try {
             $targetArguments = New-ScoopTargetUpdateArguments -Target $target -Options $Options
             exec 'update' $targetArguments
 
@@ -119,10 +115,10 @@ function Invoke-ScoopAllowlistedUpdateProcessManagement {
                 (installed $target.App $target.Global)) {
                 Sync-ScoopFixedPathsAfterUpdate -Targets @($target)
             }
-        }
-    } finally {
-        foreach ($state in $restartStates) {
-            Start-ScoopAppAfterUpdate -State $state
+        } finally {
+            if ($restartState) {
+                Start-ScoopAppAfterUpdate -State $restartState
+            }
         }
     }
 }
