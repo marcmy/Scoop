@@ -13,6 +13,10 @@
 # To install a different version of the app from a URL:
 #       scoop install https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/neovim.json@0.9.0
 #
+# To add or update a GitHub bucket and install an app from it:
+#      scoop install owner/repository/app
+#      scoop install https://github.com/owner/repository/app
+#
 # To install an app from a manifest on your computer
 #      scoop install \path\to\app.json
 #
@@ -39,6 +43,10 @@
 . "$PSScriptRoot\..\lib\psmodules.ps1"
 . "$PSScriptRoot\..\lib\versions.ps1"
 . "$PSScriptRoot\..\lib\depends.ps1"
+. "$PSScriptRoot\..\lib\github-bucket-install.ps1"
+. "$PSScriptRoot\..\lib\github-bucket-resolution.ps1"
+. "$PSScriptRoot\..\lib\github-bucket-update.ps1"
+. "$PSScriptRoot\..\lib\github-bucket-resolver.ps1"
 if (get_config USE_SQLITE_CACHE) {
     . "$PSScriptRoot\..\lib\database.ps1"
 }
@@ -70,6 +78,11 @@ if (is_scoop_outdated) {
         & "$PSScriptRoot\scoop-update.ps1"
     }
 }
+
+$githubRepositoryCache = @{}
+$apps = @($apps | ForEach-Object {
+    Resolve-ScoopGitHubBucketInstall -Spec $_ -RepositoryCache $githubRepositoryCache
+})
 
 ensure_none_failed $apps
 
