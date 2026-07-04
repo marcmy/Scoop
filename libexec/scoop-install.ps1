@@ -44,9 +44,6 @@
 . "$PSScriptRoot\..\lib\versions.ps1"
 . "$PSScriptRoot\..\lib\depends.ps1"
 . "$PSScriptRoot\..\lib\github-bucket-install.ps1"
-. "$PSScriptRoot\..\lib\github-bucket-resolution.ps1"
-. "$PSScriptRoot\..\lib\github-bucket-update.ps1"
-. "$PSScriptRoot\..\lib\github-bucket-resolver.ps1"
 if (get_config USE_SQLITE_CACHE) {
     . "$PSScriptRoot\..\lib\database.ps1"
 }
