@@ -23,19 +23,29 @@ function Stop-ScoopAppForUpdate {
     Write-Host "Stopping '$($Target.App)' ($($processes.Count) $processLabel)..."
     Write-Verbose ($processes | Format-Table -AutoSize | Out-String)
 
-    try {
-        $processes | Stop-Process -Force -ErrorAction Stop
-        foreach ($process in $processes) {
-            try { Wait-Process -Id $process.Id -ErrorAction SilentlyContinue } catch { }
+    # Some tray applications replace one process with another while shutting down.
+    # Retry against the current process set so a replacement PID cannot race the
+    # final running-process check and trigger the recovery restart path.
+    $maxStopAttempts = 50
+    $stopPollMilliseconds = 100
+    $remainingProcesses = @($processes)
+
+    for ($attempt = 1; $attempt -le $maxStopAttempts -and $remainingProcesses.Count -gt 0; $attempt++) {
+        foreach ($process in $remainingProcesses) {
+            try {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            } catch {
+                Write-Verbose "Could not stop process ID $($process.Id) for '$($Target.App)' on attempt $attempt`: $($_.Exception.Message)"
+            }
         }
-    } catch {
-        warn "Could not stop all instances of '$($Target.App)': $($_.Exception.Message)"
-        Start-ScoopAppAfterUpdate -State $state -PreferOriginalPath
-        return $null
+
+        Start-Sleep -Milliseconds $stopPollMilliseconds
+        $remainingProcesses = @(Get-ScoopAppRunningProcesses -App $Target.App -Global $Target.Global)
     }
 
-    if (@(Get-ScoopAppRunningProcesses -App $Target.App -Global $Target.Global).Count -gt 0) {
-        warn "One or more instances of '$($Target.App)' are still running."
+    if ($remainingProcesses.Count -gt 0) {
+        $waitSeconds = ($maxStopAttempts * $stopPollMilliseconds) / 1000
+        warn "One or more instances of '$($Target.App)' are still running after waiting $waitSeconds seconds."
         Start-ScoopAppAfterUpdate -State $state -PreferOriginalPath
         return $null
     }
