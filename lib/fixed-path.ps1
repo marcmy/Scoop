@@ -291,7 +291,7 @@ function Remove-ScoopLegacyFixedPathArtifacts {
         return
     }
 
-    $keep = @('current', 'current.new', 'current.old', '.scoop-fixed-layout-v2')
+    $keep = @('current', '.scoop-fixed-layout-v2')
     foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)) {
         if ($entry.Name -in $keep) {
             continue
@@ -377,37 +377,40 @@ function Convert-ScoopLegacyFixedPathLayout {
         Move-Item -LiteralPath $fixed -Destination $legacyCurrent -ErrorAction Stop
     }
 
+    # Commit the filesystem layout first. If that fails, restore any top-level
+    # 'current' directory that belonged to the legacy app tree.
     try {
         Move-Item -LiteralPath $staging -Destination $fixed -ErrorAction Stop
         Set-Content -LiteralPath $marker -Value '2' -Encoding Ascii -Force
-
-        if ($UpdateLaunchers) {
-            try {
-                Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $fixed
-            } catch {
-                $launcherError = $_
-                Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-                Remove-ScoopFixedPathDirectory $fixed
-                if ($hadLegacyCurrent -and (Test-Path -LiteralPath $legacyCurrent)) {
-                    Move-Item -LiteralPath $legacyCurrent -Destination $fixed -ErrorAction SilentlyContinue
-                }
-                try {
-                    Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $root
-                } catch {
-                    warn "Could not restore legacy launchers for '$App' after migration failure: $($_.Exception.Message)"
-                }
-                throw $launcherError
-            }
-        }
     } catch {
+        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+        Remove-ScoopFixedPathDirectory $fixed
+        if ($hadLegacyCurrent -and (Test-Path -LiteralPath $legacyCurrent)) {
+            Move-Item -LiteralPath $legacyCurrent -Destination $fixed -ErrorAction SilentlyContinue
+        }
         Remove-ScoopFixedPathDirectory $staging
-        if (!(Test-Path -LiteralPath $marker)) {
+        throw "Failed to migrate fixed path for '$App': $($_.Exception.Message)"
+    }
+
+    # Launcher redirection is a separate transaction. The legacy root files are
+    # intentionally still present here, so a failure can restore old launchers.
+    if ($UpdateLaunchers) {
+        try {
+            Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $fixed
+        } catch {
+            $launcherError = $_
+            Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
             Remove-ScoopFixedPathDirectory $fixed
             if ($hadLegacyCurrent -and (Test-Path -LiteralPath $legacyCurrent)) {
                 Move-Item -LiteralPath $legacyCurrent -Destination $fixed -ErrorAction SilentlyContinue
             }
+            try {
+                Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $root
+            } catch {
+                warn "Could not restore legacy launchers for '$App' after migration failure: $($_.Exception.Message)"
+            }
+            throw "Failed to migrate fixed path for '$App': $($launcherError.Exception.Message)"
         }
-        throw "Failed to migrate fixed path for '$App': $($_.Exception.Message)"
     }
 
     Remove-ScoopLegacyFixedPathArtifacts -App $App -Global $Global
