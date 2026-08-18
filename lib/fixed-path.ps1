@@ -1,7 +1,44 @@
 # Functions for managing opt-in fixed application paths.
 
-function fixedpathdir($app, $global) {
+function fixedpathroot($app, $global) {
     "$(basedir $global)\fixed\$app"
+}
+
+function fixedpathdir($app, $global) {
+    # Keep the launch root at the same lexical depth as apps\<app>\current.
+    # Portable applications may persist paths relative to their executable or
+    # profile directory, so changing the number of parent components can change
+    # what those stored paths resolve to.
+    "$(fixedpathroot $app $global)\current"
+}
+
+function fixedpathmarker($app, $global) {
+    "$(fixedpathroot $app $global)\.scoop-fixed-layout-v2"
+}
+
+function Test-ScoopFixedPathCurrentLayout {
+    param(
+        [Parameter(Mandatory = $true)] [String] $App,
+        [Boolean] $Global
+    )
+
+    return [Boolean](
+        (Test-Path -LiteralPath (fixedpathmarker $App $Global) -PathType Leaf) -and
+        (Test-Path -LiteralPath (fixedpathdir $App $Global) -PathType Container)
+    )
+}
+
+function Test-ScoopLegacyFixedPathLayout {
+    param(
+        [Parameter(Mandatory = $true)] [String] $App,
+        [Boolean] $Global
+    )
+
+    $root = fixedpathroot $App $Global
+    return [Boolean](
+        (Test-Path -LiteralPath $root -PathType Container) -and
+        !(Test-Path -LiteralPath (fixedpathmarker $App $Global) -PathType Leaf)
+    )
 }
 
 function Get-ScoopFixedPathNames {
@@ -127,7 +164,9 @@ function Get-ScoopFixedPathRunningProcesses {
         [Boolean] $Global
     )
 
-    $root = fixedpathdir $App $Global
+    # Inspect the parent fixed root so legacy-layout executables and any stale
+    # migration artifacts cannot escape running-process protection.
+    $root = fixedpathroot $App $Global
     if (!(Test-Path -LiteralPath $root)) {
         return @()
     }
@@ -241,6 +280,30 @@ function Remove-ScoopFixedPathDirectory {
     Remove-ScoopFixedPathItem -Path $Path
 }
 
+function Remove-ScoopLegacyFixedPathArtifacts {
+    param(
+        [Parameter(Mandatory = $true)] [String] $App,
+        [Boolean] $Global
+    )
+
+    $root = fixedpathroot $App $Global
+    if (!(Test-Path -LiteralPath $root -PathType Container)) {
+        return
+    }
+
+    $keep = @('current', 'current.new', 'current.old', '.scoop-fixed-layout-v2')
+    foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)) {
+        if ($entry.Name -in $keep) {
+            continue
+        }
+        try {
+            Remove-ScoopFixedPathItem -Path $entry.FullName
+        } catch {
+            warn "Could not remove legacy fixed-path artifact '$($entry.FullName)': $($_.Exception.Message)"
+        }
+    }
+}
+
 function Set-ScoopAppLaunchersToDirectory {
     param(
         [Parameter(Mandatory = $true)] [String] $App,
@@ -255,20 +318,100 @@ function Set-ScoopAppLaunchersToDirectory {
     $persist_dir = persistdir $App $Global
     $current = currentdir $App $Global
     $fixed = fixedpathdir $App $Global
+    $fixedRoot = fixedpathroot $App $Global
     $dir = $Directory
 
     rm_shims $App $Manifest $Global $Architecture
     rm_startmenu_shortcuts $Manifest $Global $Architecture
 
-    # Remove both possible path variants before adding the selected one.
+    # Remove normal, current-layout fixed, and legacy fixed path variants before
+    # adding the selected launcher root.
     env_rm_path $Manifest $current $Global $Architecture
     env_rm_path $Manifest $fixed $Global $Architecture
+    env_rm_path $Manifest $fixedRoot $Global $Architecture
     env_rm $Manifest $Global $Architecture
 
     create_shims $Manifest $dir $Global $Architecture
     create_startmenu_shortcuts $Manifest $dir $Global $Architecture
     env_add_path $Manifest $dir $Global $Architecture
     env_set $Manifest $Global $Architecture
+}
+
+function Convert-ScoopLegacyFixedPathLayout {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [String] $App,
+        [Boolean] $Global,
+        [Parameter(Mandatory = $true)] [String] $Source,
+        [Parameter(Mandatory = $true)] [PSCustomObject] $Manifest,
+        [Parameter(Mandatory = $true)] [String] $Architecture,
+        [Switch] $UpdateLaunchers
+    )
+
+    $root = fixedpathroot $App $Global
+    $fixed = fixedpathdir $App $Global
+    $marker = fixedpathmarker $App $Global
+    $staging = Join-Path $root '.scoop-v2.new'
+    $legacyCurrent = Join-Path $root '.scoop-v1-current'
+
+    Remove-ScoopFixedPathDirectory $staging
+    if (Test-Path -LiteralPath $legacyCurrent) {
+        if (!(Test-Path -LiteralPath $fixed)) {
+            Move-Item -LiteralPath $legacyCurrent -Destination $fixed -ErrorAction Stop
+        } else {
+            Remove-ScoopFixedPathDirectory $legacyCurrent
+        }
+    }
+
+    Write-Host "Migrating fixed path for '$App' to relative-path-safe layout: $(friendly_path $fixed)"
+
+    try {
+        New-ScoopFixedPathTree -Source $Source -Destination $staging
+    } catch {
+        Remove-ScoopFixedPathDirectory $staging
+        throw "Failed to stage fixed path migration for '$App': $($_.Exception.Message)"
+    }
+
+    $hadLegacyCurrent = Test-Path -LiteralPath $fixed
+    if ($hadLegacyCurrent) {
+        Move-Item -LiteralPath $fixed -Destination $legacyCurrent -ErrorAction Stop
+    }
+
+    try {
+        Move-Item -LiteralPath $staging -Destination $fixed -ErrorAction Stop
+        Set-Content -LiteralPath $marker -Value '2' -Encoding Ascii -Force
+
+        if ($UpdateLaunchers) {
+            try {
+                Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $fixed
+            } catch {
+                $launcherError = $_
+                Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                Remove-ScoopFixedPathDirectory $fixed
+                if ($hadLegacyCurrent -and (Test-Path -LiteralPath $legacyCurrent)) {
+                    Move-Item -LiteralPath $legacyCurrent -Destination $fixed -ErrorAction SilentlyContinue
+                }
+                try {
+                    Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $root
+                } catch {
+                    warn "Could not restore legacy launchers for '$App' after migration failure: $($_.Exception.Message)"
+                }
+                throw $launcherError
+            }
+        }
+    } catch {
+        Remove-ScoopFixedPathDirectory $staging
+        if (!(Test-Path -LiteralPath $marker)) {
+            Remove-ScoopFixedPathDirectory $fixed
+            if ($hadLegacyCurrent -and (Test-Path -LiteralPath $legacyCurrent)) {
+                Move-Item -LiteralPath $legacyCurrent -Destination $fixed -ErrorAction SilentlyContinue
+            }
+        }
+        throw "Failed to migrate fixed path for '$App': $($_.Exception.Message)"
+    }
+
+    Remove-ScoopLegacyFixedPathArtifacts -App $App -Global $Global
+    return $fixed
 }
 
 function Sync-ScoopFixedPath {
@@ -286,11 +429,15 @@ function Sync-ScoopFixedPath {
         throw "Cannot create a fixed path for '$App': current installation directory was not found."
     }
 
+    if (Test-ScoopLegacyFixedPathLayout -App $App -Global $Global) {
+        return Convert-ScoopLegacyFixedPathLayout -App $App -Global $Global -Source $source -Manifest $Manifest -Architecture $Architecture -UpdateLaunchers:$UpdateLaunchers
+    }
+
+    $root = fixedpathroot $App $Global
     $fixed = fixedpathdir $App $Global
-    $parent = Split-Path $fixed
     $staging = "$fixed.new"
     $old = "$fixed.old"
-    ensure $parent | Out-Null
+    ensure $root | Out-Null
 
     Remove-ScoopFixedPathDirectory $staging
     Remove-ScoopFixedPathDirectory $old
@@ -313,12 +460,14 @@ function Sync-ScoopFixedPath {
             throw
         }
 
+        Set-Content -LiteralPath (fixedpathmarker $App $Global) -Value '2' -Encoding Ascii -Force
+
         if (Test-Path -LiteralPath $old) {
             Remove-ScoopFixedPathDirectory $old
         }
     } catch {
         if (Test-Path -LiteralPath $staging) {
-            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-ScoopFixedPathDirectory $staging
         }
         throw "Failed to build fixed path for '$App': $($_.Exception.Message)"
     }
@@ -327,6 +476,7 @@ function Sync-ScoopFixedPath {
         Set-ScoopAppLaunchersToDirectory -App $App -Global $Global -Manifest $Manifest -Architecture $Architecture -Directory $fixed
     }
 
+    Remove-ScoopLegacyFixedPathArtifacts -App $App -Global $Global
     return $fixed
 }
 
@@ -347,11 +497,9 @@ function Remove-ScoopFixedPath {
         [Boolean] $Global
     )
 
-    $fixed = fixedpathdir $App $Global
-    foreach ($path in @($fixed, "$fixed.new", "$fixed.old")) {
-        if (Test-Path -LiteralPath $path) {
-            Remove-ScoopFixedPathDirectory $path
-        }
+    $root = fixedpathroot $App $Global
+    if (Test-Path -LiteralPath $root) {
+        Remove-ScoopFixedPathDirectory $root
     }
 }
 
@@ -361,9 +509,13 @@ function Get-ScoopPreferredLaunchRoot {
         [Boolean] $Global
     )
 
-    $fixed = fixedpathdir $App $Global
-    if ((Test-ScoopFixedPathEnabled -App $App -Global $Global) -and (Test-Path -LiteralPath $fixed -PathType Container)) {
-        return $fixed
+    if (Test-ScoopFixedPathEnabled -App $App -Global $Global) {
+        if (Test-ScoopFixedPathCurrentLayout -App $App -Global $Global) {
+            return fixedpathdir $App $Global
+        }
+        if (Test-ScoopLegacyFixedPathLayout -App $App -Global $Global) {
+            return fixedpathroot $App $Global
+        }
     }
     return currentdir $App $Global
 }
@@ -378,13 +530,20 @@ function Get-ScoopFixedPathEntries {
         )) {
         foreach ($app in $scope.Names) {
             $installed = installed $app $scope.Global
-            $path = fixedpathdir $app $scope.Global
-            $status = if (!$installed) {
-                'app not installed'
-            } elseif (Test-Path -LiteralPath $path -PathType Container) {
-                'ready'
+            $fixed = fixedpathdir $app $scope.Global
+            $legacy = fixedpathroot $app $scope.Global
+            if (!$installed) {
+                $status = 'app not installed'
+                $path = if (Test-ScoopLegacyFixedPathLayout -App $app -Global $scope.Global) { $legacy } else { $fixed }
+            } elseif (Test-ScoopFixedPathCurrentLayout -App $app -Global $scope.Global) {
+                $status = 'ready'
+                $path = $fixed
+            } elseif (Test-ScoopLegacyFixedPathLayout -App $app -Global $scope.Global) {
+                $status = 'migration required'
+                $path = $legacy
             } else {
-                'rebuild required'
+                $status = 'rebuild required'
+                $path = $fixed
             }
             $entries += [PSCustomObject]@{
                 App       = $app
