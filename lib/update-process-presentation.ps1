@@ -68,6 +68,7 @@ function Set-ScoopAppLaunchersToDirectory {
     $persist_dir = persistdir $App $Global
     $current = currentdir $App $Global
     $fixed = fixedpathdir $App $Global
+    $fixedRoot = fixedpathroot $App $Global
     $dir = $Directory
 
     Write-Host "Updating launchers for '$App': $(friendly_path $Directory)"
@@ -76,9 +77,11 @@ function Set-ScoopAppLaunchersToDirectory {
     rm_shims $App $Manifest $Global $Architecture | Out-Null
     & { rm_startmenu_shortcuts $Manifest $Global $Architecture } 6>$null
 
-    # Remove both possible path variants before adding the selected one.
+    # Remove normal, current-layout fixed, and legacy fixed path variants before
+    # adding the selected launcher root.
     env_rm_path $Manifest $current $Global $Architecture
     env_rm_path $Manifest $fixed $Global $Architecture
+    env_rm_path $Manifest $fixedRoot $Global $Architecture
     env_rm $Manifest $Global $Architecture
 
     create_shims $Manifest $dir $Global $Architecture | Out-Null
