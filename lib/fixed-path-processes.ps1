@@ -11,9 +11,11 @@ function Get-ScoopAppRunningProcesses {
     )
 
     $roots = @((appdir $App $Global))
-    $fixed = fixedpathdir $App $Global
-    if (Test-Path -LiteralPath $fixed) {
-        $roots += $fixed
+    $fixedRoot = fixedpathroot $App $Global
+    if (Test-Path -LiteralPath $fixedRoot) {
+        # Use the parent fixed root so both the legacy layout and the new
+        # relative-path-safe current child are treated as app processes.
+        $roots += $fixedRoot
     }
 
     return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
@@ -40,10 +42,22 @@ function Get-ScoopAppRelativeExecutablePath {
     )
 
     $fixed = fixedpathdir $App $Global
-    if ((Test-Path -LiteralPath $fixed) -and (Test-ScoopPathWithinRoot -Root $fixed -Path $ExecutablePath)) {
+    if ((Test-ScoopFixedPathCurrentLayout -App $App -Global $Global) -and
+        (Test-ScoopPathWithinRoot -Root $fixed -Path $ExecutablePath)) {
         $separators = [Char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
         $fixedRoot = [IO.Path]::GetFullPath($fixed).TrimEnd($separators)
         return ([IO.Path]::GetFullPath($ExecutablePath)).Substring($fixedRoot.Length).TrimStart($separators)
+    }
+
+    # A process may still be running from the legacy root or from a stale
+    # migration artifact. Resolve those relative to the old launch root so
+    # restart state remains meaningful during migration/recovery.
+    $legacyRoot = fixedpathroot $App $Global
+    if ((Test-Path -LiteralPath $legacyRoot) -and
+        (Test-ScoopPathWithinRoot -Root $legacyRoot -Path $ExecutablePath)) {
+        $separators = [Char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $rootPath = [IO.Path]::GetFullPath($legacyRoot).TrimEnd($separators)
+        return ([IO.Path]::GetFullPath($ExecutablePath)).Substring($rootPath.Length).TrimStart($separators)
     }
 
     return Get-ScoopRelativeExecutablePath -AppRoot (appdir $App $Global) -ExecutablePath $ExecutablePath
