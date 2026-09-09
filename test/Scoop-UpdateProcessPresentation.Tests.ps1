@@ -70,6 +70,48 @@ Describe 'Elevated managed app process detection' -Tag 'Scoop' {
     }
 }
 
+Describe 'Windows service process safety check' -Tag 'Scoop' {
+    BeforeEach {
+        Mock warn { }
+    }
+
+    It 'uses CIM when service information is available' {
+        Mock Get-CimInstance {
+            @([PSCustomObject]@{ ProcessId = 101 })
+        }
+        Mock Get-ScoopNativeServiceProcessId { throw 'native fallback should not be called' }
+
+        Test-ScoopProcessesIncludeService -Processes @([PSCustomObject]@{ Id = 101 }) | Should -BeTrue
+        Should -Invoke Get-ScoopNativeServiceProcessId -Times 0 -Exactly
+        Should -Invoke warn -Times 0 -Exactly
+    }
+
+    It 'uses native SCM enumeration when CIM access is denied' {
+        Mock Get-CimInstance { throw 'Access denied' }
+        Mock Get-ScoopNativeServiceProcessId { @(4564, 8936) }
+
+        Test-ScoopProcessesIncludeService -Processes @([PSCustomObject]@{ Id = 22088 }) | Should -BeFalse
+        Should -Invoke Get-ScoopNativeServiceProcessId -Times 1 -Exactly
+        Should -Invoke warn -Times 0 -Exactly
+    }
+
+    It 'still blocks automatic close when the native fallback identifies a service PID' {
+        Mock Get-CimInstance { throw 'Access denied' }
+        Mock Get-ScoopNativeServiceProcessId { @(22088) }
+
+        Test-ScoopProcessesIncludeService -Processes @([PSCustomObject]@{ Id = 22088 }) | Should -BeTrue
+        Should -Invoke warn -Times 0 -Exactly
+    }
+
+    It 'fails closed only when both service queries fail' {
+        Mock Get-CimInstance { throw 'Access denied' }
+        Mock Get-ScoopNativeServiceProcessId { throw 'SCM unavailable' }
+
+        Test-ScoopProcessesIncludeService -Processes @([PSCustomObject]@{ Id = 22088 }) | Should -BeTrue
+        Should -Invoke warn -Times 1 -Exactly
+    }
+}
+
 Describe 'Stop-ScoopAppForUpdate' -Tag 'Scoop' {
     BeforeEach {
         $script:target = [PSCustomObject]@{

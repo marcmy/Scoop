@@ -193,6 +193,169 @@ function Get-ScoopAppRunningProcesses {
         })
 }
 
+function Initialize-ScoopServiceProcessQuery {
+    if ('Scoop.ServiceProcessQuery' -as [Type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace Scoop
+{
+    public static class ServiceProcessQuery
+    {
+        private const uint SC_MANAGER_ENUMERATE_SERVICE = 0x0004;
+        private const uint SERVICE_WIN32 = 0x00000030;
+        private const uint SERVICE_STATE_ALL = 0x00000003;
+        private const int ERROR_MORE_DATA = 234;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SERVICE_STATUS_PROCESS
+        {
+            public uint dwServiceType;
+            public uint dwCurrentState;
+            public uint dwControlsAccepted;
+            public uint dwWin32ExitCode;
+            public uint dwServiceSpecificExitCode;
+            public uint dwCheckPoint;
+            public uint dwWaitHint;
+            public uint dwProcessId;
+            public uint dwServiceFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ENUM_SERVICE_STATUS_PROCESS
+        {
+            public IntPtr lpServiceName;
+            public IntPtr lpDisplayName;
+            public SERVICE_STATUS_PROCESS ServiceStatusProcess;
+        }
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenSCManager(
+            string lpMachineName,
+            string lpDatabaseName,
+            uint dwDesiredAccess);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool EnumServicesStatusEx(
+            IntPtr hSCManager,
+            int InfoLevel,
+            uint dwServiceType,
+            uint dwServiceState,
+            IntPtr lpServices,
+            uint cbBufSize,
+            out uint pcbBytesNeeded,
+            out uint lpServicesReturned,
+            ref uint lpResumeHandle,
+            string pszGroupName);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool CloseServiceHandle(IntPtr hSCObject);
+
+        public static int[] GetProcessIds()
+        {
+            IntPtr manager = OpenSCManager(null, null, SC_MANAGER_ENUMERATE_SERVICE);
+            if (manager == IntPtr.Zero)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            try
+            {
+                uint bytesNeeded;
+                uint servicesReturned;
+                uint resumeHandle = 0;
+                EnumServicesStatusEx(
+                    manager,
+                    0,
+                    SERVICE_WIN32,
+                    SERVICE_STATE_ALL,
+                    IntPtr.Zero,
+                    0,
+                    out bytesNeeded,
+                    out servicesReturned,
+                    ref resumeHandle,
+                    null);
+
+                int error = Marshal.GetLastWin32Error();
+                if (bytesNeeded == 0)
+                {
+                    if (error == 0)
+                    {
+                        return new int[0];
+                    }
+                    throw new Win32Exception(error);
+                }
+                if (error != ERROR_MORE_DATA)
+                {
+                    throw new Win32Exception(error);
+                }
+
+                IntPtr buffer = Marshal.AllocHGlobal((int)bytesNeeded);
+                try
+                {
+                    resumeHandle = 0;
+                    if (!EnumServicesStatusEx(
+                        manager,
+                        0,
+                        SERVICE_WIN32,
+                        SERVICE_STATE_ALL,
+                        buffer,
+                        bytesNeeded,
+                        out bytesNeeded,
+                        out servicesReturned,
+                        ref resumeHandle,
+                        null))
+                    {
+                        throw new Win32Exception(Marshal.GetLastWin32Error());
+                    }
+
+                    var processIds = new HashSet<int>();
+                    int entrySize = Marshal.SizeOf(typeof(ENUM_SERVICE_STATUS_PROCESS));
+                    for (int index = 0; index < servicesReturned; index++)
+                    {
+                        IntPtr entryPointer = IntPtr.Add(buffer, index * entrySize);
+                        var entry = (ENUM_SERVICE_STATUS_PROCESS)Marshal.PtrToStructure(
+                            entryPointer,
+                            typeof(ENUM_SERVICE_STATUS_PROCESS));
+                        if (entry.ServiceStatusProcess.dwProcessId != 0)
+                        {
+                            processIds.Add((int)entry.ServiceStatusProcess.dwProcessId);
+                        }
+                    }
+
+                    var result = new int[processIds.Count];
+                    processIds.CopyTo(result);
+                    return result;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            finally
+            {
+                CloseServiceHandle(manager);
+            }
+        }
+    }
+}
+'@
+}
+
+function Get-ScoopNativeServiceProcessId {
+    [CmdletBinding()]
+    param()
+
+    Initialize-ScoopServiceProcessQuery
+    return @([Scoop.ServiceProcessQuery]::GetProcessIds())
+}
+
 function Test-ScoopProcessesIncludeService {
     [CmdletBinding()]
     param(
@@ -209,8 +372,13 @@ function Test-ScoopProcessesIncludeService {
                 [Int32]$_.ProcessId -in $processIds
             } | Select-Object -First 1)
     } catch {
-        warn "Unable to verify whether matching processes are Windows services; automatic close is being skipped."
-        return $true
+        try {
+            $serviceProcessIds = @(Get-ScoopNativeServiceProcessId)
+            return [Boolean]($processIds | Where-Object { $_ -in $serviceProcessIds } | Select-Object -First 1)
+        } catch {
+            warn "Unable to verify whether matching processes are Windows services; automatic close is being skipped."
+            return $true
+        }
     }
 }
 
