@@ -5,6 +5,7 @@ BeforeAll {
     . "$PSScriptRoot\..\lib\update-processes.ps1"
     . "$PSScriptRoot\..\lib\fixed-path-processes.ps1"
     . "$PSScriptRoot\..\lib\update-process-presentation.ps1"
+    . "$PSScriptRoot\..\lib\update-process-detached-launch.ps1"
 }
 
 Describe 'Elevated managed app process detection' -Tag 'Scoop' {
@@ -108,6 +109,47 @@ Describe 'Windows service process safety check' -Tag 'Scoop' {
         Mock Get-ScoopNativeServiceProcessId { throw 'SCM unavailable' }
 
         Test-ScoopProcessesIncludeService -Processes @([PSCustomObject]@{ Id = 22088 }) | Should -BeTrue
+        Should -Invoke warn -Times 1 -Exactly
+    }
+}
+
+Describe 'Elevated app restart fallback' -Tag 'Scoop' {
+    BeforeEach {
+        $script:restartPath = 'C:\Users\tester\scoop\fixed\islc\Intelligent standby list cleaner ISLC.exe'
+        $script:restartState = [PSCustomObject]@{
+            App                = 'islc'
+            Global             = $false
+            RestartExecutables = @([PSCustomObject]@{
+                    RelativePath = 'Intelligent standby list cleaner ISLC.exe'
+                    OriginalPath = $script:restartPath
+                })
+        }
+
+        Mock Test-ScoopAppExecutableRunning { $false }
+        Mock Resolve-ScoopRestartExecutable { $script:restartPath }
+        Mock Start-Process { }
+        Mock warn { }
+    }
+
+    It 'requests elevation only when detached CreateProcess reports error 740' {
+        Mock Start-ScoopDetachedProcess { throw [System.ComponentModel.Win32Exception]::new(740) }
+
+        Start-ScoopAppAfterUpdate -State $script:restartState
+
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $FilePath -eq $script:restartPath -and
+            $WorkingDirectory -eq (Split-Path -Parent $script:restartPath) -and
+            $Verb -eq 'RunAs'
+        }
+        Should -Invoke warn -Times 0 -Exactly
+    }
+
+    It 'does not elevate for unrelated detached-launch failures' {
+        Mock Start-ScoopDetachedProcess { throw [System.ComponentModel.Win32Exception]::new(5) }
+
+        Start-ScoopAppAfterUpdate -State $script:restartState
+
+        Should -Invoke Start-Process -Times 0 -Exactly
         Should -Invoke warn -Times 1 -Exactly
     }
 }

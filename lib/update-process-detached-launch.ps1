@@ -184,6 +184,24 @@ function Start-ScoopDetachedProcess {
     [Scoop.NativeProcessLauncher]::StartDetached($FilePath, $WorkingDirectory)
 }
 
+function Test-ScoopRestartRequiresElevation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord] $ErrorRecord
+    )
+
+    $exception = $ErrorRecord.Exception
+    while ($exception) {
+        if ($exception -is [System.ComponentModel.Win32Exception] -and $exception.NativeErrorCode -eq 740) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+
+    return $false
+}
+
 function Start-ScoopAppAfterUpdate {
     [CmdletBinding()]
     param(
@@ -207,7 +225,16 @@ function Start-ScoopAppAfterUpdate {
         try {
             Start-ScoopDetachedProcess -FilePath $targetPath -WorkingDirectory (Split-Path -Parent $targetPath)
         } catch {
-            warn "Could not restart '$($State.App)': $($_.Exception.Message)"
+            if (Test-ScoopRestartRequiresElevation -ErrorRecord $_) {
+                try {
+                    Write-Host "Restart requires elevation; requesting administrator approval..."
+                    Start-Process -FilePath $targetPath -WorkingDirectory (Split-Path -Parent $targetPath) -Verb RunAs
+                } catch {
+                    warn "Could not restart '$($State.App)': $($_.Exception.Message)"
+                }
+            } else {
+                warn "Could not restart '$($State.App)': $($_.Exception.Message)"
+            }
         }
     }
 }
