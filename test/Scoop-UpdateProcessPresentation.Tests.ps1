@@ -1,9 +1,73 @@
 BeforeAll {
     . "$PSScriptRoot\Scoop-TestLib.ps1"
     . "$PSScriptRoot\..\lib\core.ps1"
+    . "$PSScriptRoot\..\lib\fixed-path.ps1"
     . "$PSScriptRoot\..\lib\update-processes.ps1"
     . "$PSScriptRoot\..\lib\fixed-path-processes.ps1"
     . "$PSScriptRoot\..\lib\update-process-presentation.ps1"
+}
+
+Describe 'Elevated managed app process detection' -Tag 'Scoop' {
+    BeforeEach {
+        $script:fixedRoot = 'C:\Users\tester\scoop\fixed\islc'
+        $script:oldFixedRoot = 'C:\Users\tester\scoop\fixed\islc.old'
+        $script:islcExecutable = "$script:oldFixedRoot\Intelligent standby list cleaner ISLC.exe"
+    }
+
+    It 'falls back to the native limited-rights query when Get-Process hides Path' {
+        $process = [PSCustomObject]@{
+            Id               = 22088
+            ProcessName      = 'Intelligent standby list cleaner ISLC'
+            Path             = $null
+            MainWindowHandle = 1
+        }
+
+        Mock Get-ScoopNativeProcessExecutablePath { $script:islcExecutable }
+
+        Get-ScoopAppProcessExecutablePath -Process $process | Should -Be $script:islcExecutable
+        Should -Invoke Get-ScoopNativeProcessExecutablePath -Times 1 -Exactly -ParameterFilter { $ProcessId -eq 22088 }
+    }
+
+    It 'prefers a readable process path without invoking the native fallback' {
+        $process = [PSCustomObject]@{
+            Id               = 22088
+            ProcessName      = 'Intelligent standby list cleaner ISLC'
+            Path             = 'C:\Other\Intelligent standby list cleaner ISLC.exe'
+            MainWindowHandle = 1
+        }
+
+        Mock Get-ScoopNativeProcessExecutablePath { throw 'should not be called' }
+
+        Get-ScoopAppProcessExecutablePath -Process $process | Should -Be $process.Path
+        Should -Invoke Get-ScoopNativeProcessExecutablePath -Times 0 -Exactly
+    }
+
+    It 'recognizes a process still running from the previous fixed-path tree' {
+        $process = [PSCustomObject]@{
+            Id               = 22088
+            ProcessName      = 'Intelligent standby list cleaner ISLC'
+            Path             = $null
+            MainWindowHandle = 1
+        }
+
+        Mock appdir { 'C:\Users\tester\scoop\apps\islc' }
+        Mock fixedpathdir { $script:fixedRoot }
+        Mock Get-ScoopNativeProcessExecutablePath { $script:islcExecutable }
+        Mock Get-Process { @($process) }
+
+        $result = @(Get-ScoopAppRunningProcesses -App 'islc' -Global $false)
+
+        $result.Count | Should -Be 1
+        $result[0].Id | Should -Be 22088
+    }
+
+    It 'maps a previous fixed-path executable back to its app-relative restart path' {
+        Mock fixedpathdir { $script:fixedRoot }
+
+        $relativePath = Get-ScoopAppRelativeExecutablePath -App 'islc' -Global $false -ExecutablePath $script:islcExecutable
+
+        $relativePath | Should -Be 'Intelligent standby list cleaner ISLC.exe'
+    }
 }
 
 Describe 'Stop-ScoopAppForUpdate' -Tag 'Scoop' {

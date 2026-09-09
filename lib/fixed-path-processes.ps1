@@ -2,6 +2,97 @@
 # This file is loaded after update-processes.ps1 and intentionally extends a
 # few of its functions so fixed-path processes are treated as app processes.
 
+function Initialize-ScoopProcessPathQuery {
+    if ('Scoop.ProcessPathQuery' -as [Type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace Scoop
+{
+    public static class ProcessPathQuery
+    {
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryFullProcessImageNameW(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        public static string TryGet(int processId)
+        {
+            IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)processId);
+            if (process == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            try
+            {
+                var path = new StringBuilder(32768);
+                uint length = (uint)path.Capacity;
+                return QueryFullProcessImageNameW(process, 0, path, ref length) ? path.ToString() : null;
+            }
+            finally
+            {
+                CloseHandle(process);
+            }
+        }
+    }
+}
+'@
+}
+
+function Get-ScoopNativeProcessExecutablePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [Int32] $ProcessId
+    )
+
+    try {
+        Initialize-ScoopProcessPathQuery
+        return [Scoop.ProcessPathQuery]::TryGet($ProcessId)
+    } catch {
+        return $null
+    }
+}
+
+function Get-ScoopAppProcessExecutablePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [Object] $Process
+    )
+
+    $path = $null
+    try { $path = $Process.Path } catch { }
+    if (!$path -and $Process.Id) {
+        $path = Get-ScoopNativeProcessExecutablePath -ProcessId ([Int32]$Process.Id)
+    }
+    return $path
+}
+
+function Get-ScoopFixedProcessRoots {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [String] $App,
+        [Boolean] $Global
+    )
+
+    $fixed = fixedpathdir $App $Global
+    return @($fixed, "$fixed.old", "$fixed.new")
+}
+
 function Get-ScoopAppRunningProcesses {
     [CmdletBinding()]
     param(
@@ -10,20 +101,15 @@ function Get-ScoopAppRunningProcesses {
         [Boolean] $Global
     )
 
-    $roots = @((appdir $App $Global))
-    $fixed = fixedpathdir $App $Global
-    if (Test-Path -LiteralPath $fixed) {
-        $roots += $fixed
-    }
+    $roots = @((appdir $App $Global)) + @(Get-ScoopFixedProcessRoots -App $App -Global $Global)
 
     return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-            $path = $null
-            try { $path = $_.Path } catch { }
+            $path = Get-ScoopAppProcessExecutablePath -Process $_
             if (!$path) {
                 return $false
             }
             foreach ($root in $roots) {
-                if ((Test-Path -LiteralPath $root) -and (Test-ScoopPathWithinRoot -Root $root -Path $path)) {
+                if (Test-ScoopPathWithinRoot -Root $root -Path $path) {
                     return $true
                 }
             }
@@ -39,10 +125,13 @@ function Get-ScoopAppRelativeExecutablePath {
         [Parameter(Mandatory = $true)] [String] $ExecutablePath
     )
 
-    $fixed = fixedpathdir $App $Global
-    if ((Test-Path -LiteralPath $fixed) -and (Test-ScoopPathWithinRoot -Root $fixed -Path $ExecutablePath)) {
+    foreach ($fixedRootPath in @(Get-ScoopFixedProcessRoots -App $App -Global $Global)) {
+        if (!(Test-ScoopPathWithinRoot -Root $fixedRootPath -Path $ExecutablePath)) {
+            continue
+        }
+
         $separators = [Char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-        $fixedRoot = [IO.Path]::GetFullPath($fixed).TrimEnd($separators)
+        $fixedRoot = [IO.Path]::GetFullPath($fixedRootPath).TrimEnd($separators)
         return ([IO.Path]::GetFullPath($ExecutablePath)).Substring($fixedRoot.Length).TrimStart($separators)
     }
 
@@ -68,10 +157,7 @@ function New-ScoopAppUpdateProcessState {
     $seen = @{}
     foreach ($rootProcess in $rootProcesses) {
         $process = $Processes | Where-Object { [Int32]$_.Id -eq [Int32]$rootProcess.ProcessId } | Select-Object -First 1
-        $path = $null
-        if ($process) {
-            try { $path = $process.Path } catch { }
-        }
+        $path = if ($process) { Get-ScoopAppProcessExecutablePath -Process $process } else { $null }
         if (!$path) {
             $path = $rootProcess.ExecutablePath
         }
@@ -102,8 +188,7 @@ function New-ScoopAppUpdateProcessState {
             $fallback = @($Processes | Select-Object -First 1)
         }
         foreach ($process in $fallback) {
-            $path = $null
-            try { $path = $process.Path } catch { }
+            $path = Get-ScoopAppProcessExecutablePath -Process $process
             if (!$path) {
                 continue
             }
@@ -166,8 +251,7 @@ function Test-ScoopAppExecutableRunning {
     )
 
     foreach ($process in @(Get-ScoopAppRunningProcesses -App $State.App -Global $State.Global)) {
-        $path = $null
-        try { $path = $process.Path } catch { }
+        $path = Get-ScoopAppProcessExecutablePath -Process $process
         if (!$path) {
             continue
         }
