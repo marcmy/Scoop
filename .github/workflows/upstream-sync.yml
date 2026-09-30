@@ -130,7 +130,7 @@ jobs:
             exit 0
           fi
 
-          if ! git diff --quiet origin/master -- .github/workflows; then
+          if ! git diff --cached --quiet origin/master -- .github/workflows; then
             echo 'Fork-owned workflows changed unexpectedly during the merge.' >&2
             git merge --abort
             exit 1
