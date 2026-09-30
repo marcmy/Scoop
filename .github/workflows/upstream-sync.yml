@@ -92,13 +92,23 @@ jobs:
           git switch --force-create "${SYNC_BRANCH}" origin/master
 
           set +e
-          git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}" > merge-output.txt 2>&1
+          git merge --no-commit --no-ff "upstream/${UPSTREAM_BRANCH}" > merge-output.txt 2>&1
           merge_status=$?
           set -e
 
           cat merge-output.txt
-          if [[ $merge_status -ne 0 ]]; then
-            conflicted_files="$(git diff --name-only --diff-filter=U)"
+
+          # Keep fork-owned workflows unchanged. The push credential cannot
+          # create or update GitHub Actions workflow files from upstream.
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git restore --source=origin/master --staged --worktree -- .github/workflows
+          elif [[ $merge_status -ne 0 ]]; then
+            echo 'The merge failed without a resolvable merge state.' >&2
+            exit "$merge_status"
+          fi
+
+          conflicted_files="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$conflicted_files" ]]; then
             {
               echo 'conflict=true'
               echo 'files<<EOF'
@@ -119,6 +129,14 @@ jobs:
             git merge --abort
             exit 0
           fi
+
+          if ! git diff --quiet origin/master -- .github/workflows; then
+            echo 'Fork-owned workflows changed unexpectedly during the merge.' >&2
+            git merge --abort
+            exit 1
+          fi
+
+          git commit -m "Merge upstream Scoop master (preserve fork workflows)"
 
           echo 'conflict=false' >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" >> "$GITHUB_OUTPUT"
