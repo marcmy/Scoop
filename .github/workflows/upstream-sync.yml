@@ -98,10 +98,11 @@ jobs:
 
           cat merge-output.txt
 
-          # Keep fork-owned workflows unchanged. The push credential cannot
-          # create or update GitHub Actions workflow files from upstream.
+          # Keep fork-owned automation config unchanged. The push credential
+          # cannot create or update GitHub Actions workflow files from upstream,
+          # and upstream Dependabot targets do not necessarily match this fork.
           if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-            git restore --source=origin/master --staged --worktree -- .github/workflows
+            git restore --source=origin/master --staged --worktree -- .github/workflows .github/dependabot.yml
           elif [[ $merge_status -ne 0 ]]; then
             echo 'The merge failed without a resolvable merge state.' >&2
             exit "$merge_status"
@@ -130,13 +131,13 @@ jobs:
             exit 0
           fi
 
-          if ! git diff --cached --quiet origin/master -- .github/workflows; then
-            echo 'Fork-owned workflows changed unexpectedly during the merge.' >&2
+          if ! git diff --cached --quiet origin/master -- .github/workflows .github/dependabot.yml; then
+            echo 'Fork-owned automation config changed unexpectedly during the merge.' >&2
             git merge --abort
             exit 1
           fi
 
-          git commit -m "Merge upstream Scoop master (preserve fork workflows)"
+          git commit -m "Merge upstream Scoop master (preserve fork automation config)"
 
           echo 'conflict=false' >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" >> "$GITHUB_OUTPUT"
