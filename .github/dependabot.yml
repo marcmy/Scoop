@@ -9,3 +9,11 @@ updates:
       time: "12:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 100
+
+  - package-ecosystem: "nuget"
+    directory: "/supporting/validator"
+    schedule:
+      interval: "daily"
+      time: "12:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 100
