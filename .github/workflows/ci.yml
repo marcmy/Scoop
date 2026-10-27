@@ -32,6 +32,12 @@ jobs:
         uses: actions/checkout@main
         with:
           fetch-depth: 2
+      - name: Ensure PSGallery is registered for PowerShell 7
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
       - name: Init Test Suite
         uses: potatoqualitee/psmodulecache@main
         with:
