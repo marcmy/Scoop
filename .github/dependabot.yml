@@ -9,6 +9,8 @@ updates:
       time: "12:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 100
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "nuget"
     directory: "/supporting/validator"
@@ -17,3 +19,5 @@ updates:
       time: "12:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 100
+    cooldown:
+      default-days: 7
