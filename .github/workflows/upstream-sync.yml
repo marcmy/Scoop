@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
@@ -120,7 +120,7 @@ jobs:
             {
               echo '## Upstream merge conflict'
               echo
-              echo 'The automated merge was aborted. Conflicting files:'
+              echo 'The automated merge was aborted; opening a pull request to resolve it. Conflicting files:'
               echo
               echo '```text'
               printf '%s\n' "$conflicted_files"
@@ -142,49 +142,27 @@ jobs:
           echo 'conflict=false' >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" >> "$GITHUB_OUTPUT"
 
-      - name: Report merge conflicts
+      - name: Open conflict pull request
         if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict == 'true'
         shell: bash
         env:
-          CONFLICTED_FILES: ${{ steps.merge.outputs.files }}
-          REPOSITORY: ${{ github.repository }}
-          SERVER_URL: ${{ github.server_url }}
-          RUN_ID: ${{ github.run_id }}
+          FORK_BRANCH: master
+          UPSTREAM_REF: upstream/${{ env.UPSTREAM_BRANCH }}
+          UPSTREAM_NAME: ${{ env.UPSTREAM_REPOSITORY }}@${{ env.UPSTREAM_BRANCH }}
+          # Separate from the clean-merge review branch in SYNC_BRANCH
+          SYNC_BRANCH: upstream-sync
+          KEEP_FORK_PATHS: .github/workflows .github/dependabot.yml
         run: |
           set -euo pipefail
-          cat > conflict-report.md <<EOF
-          The scheduled merge of \`${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH}\` into \`${REPOSITORY}:master\` could not be completed automatically.
-
-          Conflicting files:
-
-          \`\`\`text
-          ${CONFLICTED_FILES}
-          \`\`\`
-
-          The workflow left \`master\` and \`${SYNC_BRANCH}\` unchanged. Resolve the merge manually on a separate branch, then close this issue after the result reaches \`master\`.
-
-          Workflow run: ${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}
-          EOF
-
-          cat conflict-report.md >> "$GITHUB_STEP_SUMMARY"
-
-          pr_number="$(gh pr list --head "${SYNC_BRANCH}" --base master --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          # The clean-merge review PR is out of date while upstream conflicts
+          pr_number="$(gh pr list --head sync/upstream-master --base master --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           if [[ -n "$pr_number" ]]; then
-            gh pr comment "$pr_number" --body 'Closing because the latest upstream merge conflicts and the automation branch was intentionally left unchanged.' || true
+            gh pr comment "$pr_number" --body 'Closing because the latest upstream merge conflicts; see the "Resolve upstream sync conflicts" pull request.' || true
             gh pr close "$pr_number" || true
           fi
-
-          issues_enabled="$(gh api "repos/${GH_REPO}" --jq '.has_issues' 2>/dev/null || echo false)"
-          if [[ "$issues_enabled" == 'true' ]]; then
-            issue_number="$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"${CONFLICT_ISSUE_TITLE}\") | .number" 2>/dev/null | head -n 1 || true)"
-            if [[ -n "$issue_number" ]]; then
-              gh issue comment "$issue_number" --body-file conflict-report.md || true
-            else
-              gh issue create --title "${CONFLICT_ISSUE_TITLE}" --body-file conflict-report.md || true
-            fi
-          else
-            echo 'Repository Issues are disabled; the conflict report is available in this run summary.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # .gitattributes checks every file out with CRLF, which bash can't run
+          tr -d '\r' < .github/scripts/sync-conflict-pr.sh > "$RUNNER_TEMP/sync-conflict-pr.sh"
+          bash "$RUNNER_TEMP/sync-conflict-pr.sh"
 
       - name: Push the clean sync branch
         if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict != 'true'
@@ -230,8 +208,3 @@ jobs:
               gh issue close "$issue_number" || true
             fi
           fi
-
-      - name: Fail the run after reporting a conflict
-        if: steps.status.outputs.up_to_date != 'true' && steps.merge.outputs.conflict == 'true'
-        shell: bash
-        run: exit 1
