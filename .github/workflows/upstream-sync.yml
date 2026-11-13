@@ -25,6 +25,7 @@ jobs:
   sync:
     name: Merge upstream into a review branch
     runs-on: ubuntu-latest
+    environment: upstream-sync
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
